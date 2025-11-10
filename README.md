@@ -28,85 +28,6 @@ A sophisticated multi-agent chatbot system built with OpenAI, ChromaDB, LangChai
     └── helpers.py         # Helper functions
 ```
 
-## Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd contextual-assistant
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Set up environment** (optional):
-   ```bash
-   # Create .env file with your OpenAI API key
-   echo "OPENAI_API_KEY=your_api_key_here" > .env
-   ```
-
-## Usage
-
-### Web Interface
-
-1. **Start the Streamlit application**:
-   ```bash
-   streamlit run ui/chat_interface.py
-   ```
-
-2. **Open your browser** to `http://localhost:8501`
-
-3. **Enter your OpenAI API key** and username in the sidebar
-
-4. **Start chatting** with Serani!
-
-### Programmatic Usage (Optional)
-
-If you need to use the assistant programmatically in your own scripts:
-
-```python
-from app import SeraniAssistant
-
-# Initialize the assistant
-assistant = SeraniAssistant("your-openai-api-key")
-assistant.initialize("YourName")
-
-# Chat with the assistant
-response = assistant.chat("Remind me to prepare for my presentation tomorrow evening", "YourName")
-print(response)
-
-# Get tasks
-tasks = assistant.get_tasks("YourName")
-print(tasks)
-```
-
-## Sample Conversation
-
-```
-User: Hey Serani, remind me to start preparing for my project presentation.
-
-Serani: Got it, Viru! When do you plan to start working on it — today or later this week?
-
-User: Let's do it tomorrow evening.
-
-Serani: Alright ■ I'll remind you tomorrow evening. How long would you like to focus on it?
-
-User: Maybe two hours should be enough.
-
-Serani: Noted — two hours of project prep time ■
-
-By the way, you mentioned last week you were feeling a bit stressed about this project. Want me to set a short motivational note before you start tomorrow?
-
-User: Haha yes, that would actually help.
-
-Serani: Perfect ■ I'll drop a quick "You've got this, Viru ■" message right before your session.
-
-User: Thanks, Serani.
-
-Serani: Anytime! You focus on your goals — I'll handle the reminders. Deal? ■
-```
 
 ## Configuration
 
@@ -172,12 +93,6 @@ The system uses OpenAI's GPT-3.5-turbo model by default. You can modify the mode
 - `created_at`: Creation timestamp
 - `updated_at`: Last update timestamp
 
-### Conversations Table
-- `id`: Primary key
-- `user_id`: Foreign key to users
-- `message`: Message content
-- `role`: user/assistant
-- `timestamp`: Message timestamp
 
 ## Features in Detail
 
@@ -198,54 +113,5 @@ The system uses OpenAI's GPT-3.5-turbo model by default. You can modify the mode
 - Schedule optimization suggestions
 - Status tracking and updates
 
-## Troubleshooting
 
-### Common Issues
 
-1. **"Assistant not initialized"**
-   - Ensure OpenAI API key is provided
-   - Check database permissions
-   - Verify all dependencies are installed
-
-2. **"ChromaDB connection failed"**
-   - Check disk space for database files
-   - Ensure write permissions in database directory
-
-3. **"OpenAI API error"**
-   - Verify API key is valid
-   - Check API usage limits
-   - Ensure internet connectivity
-
-### Debug Mode
-
-Enable debug mode by setting `DEBUG=True` in your environment or `config/settings.py` for detailed logging.
-
-## Development
-
-### Project Structure
-```
-contextual-assistant/
-├── agents/           # Agent implementations
-├── database/         # Database management
-├── ui/              # User interface
-├── config/          # Configuration
-├── utils/           # Utility functions
-├── app.py           # Main application
-├── requirements.txt # Dependencies
-└── README.md        # This file
-```
-
-### Adding New Features
-
-1. **New Agent**: Create in `agents/` directory
-2. **Database Changes**: Update `database/db_manager.py`
-3. **UI Updates**: Modify `ui/chat_interface.py`
-4. **Configuration**: Add to `config/settings.py`
-
-## License
-
-This project is part of a candidate assignment for Viso Labs.
-
-## Support
-
-For issues and questions, please refer to the project documentation or contact the development team.
