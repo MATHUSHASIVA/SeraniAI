@@ -288,11 +288,17 @@ class ChatInterface:
             
             # Get response from main agent
             with st.spinner("Serani is thinking..."):
-                response = st.session_state.main_agent.process_message(
-                    st.session_state.user_id, 
-                    user_input, 
-                    st.session_state.username
-                )
+                try:
+                    response = st.session_state.main_agent.process_message(
+                        st.session_state.user_id, 
+                        user_input, 
+                        st.session_state.username
+                    )
+                except Exception as process_error:
+                    st.error(f"Error in process_message: {str(process_error)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                    response = "I'm sorry, I encountered an error. Please try again."
             
             # Add assistant response to history
             assistant_message = {
@@ -303,8 +309,9 @@ class ChatInterface:
             st.session_state.chat_history.append(assistant_message)
             
         except Exception as e:
-            st.error(f"Error processing message: {e}")
-            st.exception(e)
+            st.error(f"Error processing message: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
     
     def render_main_interface(self):
         """Render the main chat interface."""

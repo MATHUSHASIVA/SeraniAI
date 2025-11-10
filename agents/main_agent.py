@@ -70,21 +70,39 @@ class MainAgent:
         """
         try:
             # Get conversation context from ChromaDB
-            context_prompt = self.context_agent.build_context_prompt(
-                user_id, message, []
-            )
+            try:
+                context_prompt = self.context_agent.build_context_prompt(
+                    user_id, message, []
+                )
+            except Exception as ctx_error:
+                print(f"Error building context: {ctx_error}")
+                context_prompt = ""
             
             # Determine intent and route to appropriate handler
-            intent = self._analyze_intent(message, context_prompt, username)
+            try:
+                intent = self._analyze_intent(message, context_prompt, username)
+            except Exception as intent_error:
+                print(f"Error analyzing intent: {intent_error}")
+                import traceback
+                traceback.print_exc()
+                raise
             
             # Process based on intent
-            response = self._handle_intent(user_id, message, intent, context_prompt, username)
+            try:
+                response = self._handle_intent(user_id, message, intent, context_prompt, username)
+            except Exception as handle_error:
+                print(f"Error handling intent: {handle_error}")
+                import traceback
+                traceback.print_exc()
+                raise
             
             return response
             
         except Exception as e:
             print(f"Error processing message: {e}")
-            return "I'm sorry, I encountered an error processing your message. Could you please try again?"
+            import traceback
+            traceback.print_exc()
+            return f"I'm sorry, I encountered an error processing your message: {str(e)}"
     
     def _analyze_intent(self, message: str, context: str, username: str) -> Dict:
         """
@@ -98,17 +116,21 @@ class MainAgent:
         Context: {context}
         
         Classify the intent as one of:
-        1. "task_creation" - User explicitly wants to create a new task, reminder, or asks you to remind them about something
-           - Keywords: "remind me", "schedule", "set a reminder", "I need to", "help me remember"
-           - NOT for: sharing information, travel plans, or general updates
+        1. "task_creation" - User wants to create a task/event, including:
+           - Explicit requests: "remind me", "schedule", "set a reminder", "help me remember"
+           - Informing about events/meetings: "I have a meeting", "I'm meeting", "meeting tomorrow"
+           - Appointments/commitments: "I have an appointment", "I need to call", "I have to submit"
+           - NOT for: casual travel mentions ("I'm flying to Canada" without context)
         2. "task_query" - User wants to see their tasks or ask about scheduling
         3. "task_update" - User wants to modify an existing task
-        4. "general_chat" - General conversation, sharing information, travel updates, or unclear intent
-           - Use this for: sharing travel plans, life updates, general information
+        4. "general_chat" - General conversation without scheduling implications
+           - Use for: casual info sharing, questions, general updates without time/event mentions
         5. "clarification_response" - User is responding to a clarifying question
         
-        IMPORTANT: Only classify as "task_creation" if the user explicitly asks you to remind them or create a task.
-        Sharing information (like flight details) should be classified as "general_chat".
+        IMPORTANT: 
+        - If user mentions a specific meeting/appointment/event with time details → task_creation
+        - If user just shares info without wanting it tracked → general_chat
+        - When in doubt about meetings/events with times → lean toward task_creation
         
         Return JSON:
         {{
@@ -153,6 +175,10 @@ class MainAgent:
         Route message to appropriate handler based on intent.
         """
         intent_type = intent.get("intent", "general_chat")
+        
+        # Debug: Log intent detection
+        print(f"DEBUG: Detected intent '{intent_type}' with confidence {intent.get('confidence', 0)}")
+        print(f"DEBUG: Full intent: {intent}")
         
         if intent_type == "task_creation":
             return self._handle_task_creation(user_id, message, context, username)

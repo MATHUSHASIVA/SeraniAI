@@ -32,19 +32,16 @@ class TaskAgent:
         
         Context: {context}
         
-        IMPORTANT: Only classify as a task request if the user explicitly asks you to:
-        - "remind me to..."
-        - "schedule..."
-        - "set a reminder..."
-        - "help me remember to..."
-        - "I need to remember to..."
+        Classify as a task request if the user:
+        - Explicitly asks: "remind me to...", "schedule...", "set a reminder..."
+        - Mentions events/meetings: "I have a meeting", "meeting tomorrow", "appointment at"
+        - Describes commitments with time: "I need to call", "I have to submit by"
         
         Do NOT classify as task requests:
-        - Sharing information (travel plans, schedules, updates)
-        - Stating facts about future events
-        - General conversation
+        - Casual mentions: "I'm flying to Canada" (without wanting to track it)
+        - General updates without scheduling needs
         
-        Extract the following information ONLY if this is a genuine task creation request:
+        Extract the following information if this is a task creation request:
         1. Task title/description
         2. Start time (convert relative times like "tomorrow evening" to specific times)
         3. Duration (in minutes)
