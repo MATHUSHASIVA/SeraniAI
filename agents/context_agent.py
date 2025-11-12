@@ -45,25 +45,19 @@ class ContextAgent:
                                  conversation_metadata: Dict = None):
         """
         Store a conversation summary in ChromaDB with embeddings.
+        Only user_id is stored in metadata for simple vector retrieval.
         """
         try:
             # Generate embedding for the summary
             embedding = self.embeddings.embed_query(summary)
             
-            # Prepare metadata
+            # Simple metadata - only user_id
             metadata = {
-                "user_id": str(user_id),
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-                "timestamp": datetime.now().isoformat(),
-                "type": "conversation_summary"
+                "user_id": str(user_id)
             }
             
-            if conversation_metadata:
-                metadata.update(conversation_metadata)
-            
             # Generate unique ID
-            doc_id = f"conv_{user_id}_{start_time.strftime('%Y%m%d_%H%M%S')}"
+            doc_id = f"conv_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
             
             # Store in ChromaDB
             self.conversation_collection.add(
@@ -73,10 +67,12 @@ class ContextAgent:
                 ids=[doc_id]
             )
             
+            print(f"💾 Stored: {summary[:60]}...")
+            
             return doc_id
             
         except Exception as e:
-            print(f"Error storing conversation summary: {e}")
+            print(f"❌ Error storing summary: {e}")
             return None
     
     def store_user_context(self, user_id: int, context_type: str, 
@@ -119,58 +115,34 @@ class ContextAgent:
     def retrieve_relevant_context(self, user_id: int, query: str, 
                                 n_results: int = 3) -> List[Dict]:
         """
-        Retrieve most relevant context for a given query.
+        Retrieve most relevant conversation summaries using vector similarity search.
+        Simple RAG: query -> embed -> find similar -> return results
         """
         try:
-            # Generate query embedding
+            # Generate query embedding (silent operation)
             query_embedding = self.embeddings.embed_query(query)
             
-            # Search conversation summaries
-            conv_results = self.conversation_collection.query(
+            # Search conversation summaries only
+            results = self.conversation_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=n_results,
                 where={"user_id": str(user_id)}
             )
             
-            # Search user context
-            context_results = self.user_context_collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where={"user_id": str(user_id)}
-            )
-            
-            # Combine and format results
+            # Format results
             relevant_context = []
             
-            # Process conversation summaries
-            if conv_results['documents']:
-                for i, doc in enumerate(conv_results['documents'][0]):
+            if results['documents'] and len(results['documents'][0]) > 0:
+                for i, doc in enumerate(results['documents'][0]):
                     relevant_context.append({
-                        "type": "conversation_summary",
                         "content": doc,
-                        "metadata": conv_results['metadatas'][0][i],
-                        "distance": conv_results['distances'][0][i] if 'distances' in conv_results else 0,
-                        "source": "conversation"
+                        "distance": results['distances'][0][i] if 'distances' in results else 0
                     })
             
-            # Process user context
-            if context_results['documents']:
-                for i, doc in enumerate(context_results['documents'][0]):
-                    relevant_context.append({
-                        "type": "user_context",
-                        "content": doc,
-                        "metadata": context_results['metadatas'][0][i],
-                        "distance": context_results['distances'][0][i] if 'distances' in context_results else 0,
-                        "source": "context"
-                    })
-            
-            # Sort by relevance (lower distance = more relevant)
-            relevant_context.sort(key=lambda x: x.get('distance', 0))
-            
-            return relevant_context[:n_results]
+            return relevant_context
             
         except Exception as e:
-            print(f"Error retrieving context: {e}")
+            print(f"   ❌ Error retrieving context: {e}")
             return []
     
     def summarize_recent_conversations(self, conversations: List[Dict], 
@@ -277,39 +249,45 @@ class ContextAgent:
     def build_context_prompt(self, user_id: int, current_query: str,
                            recent_conversations: List[Dict]) -> str:
         """
-        Build a comprehensive context prompt combining short-term and long-term memory.
+        Build context prompt by retrieving similar conversation summaries from ChromaDB.
+        Simple RAG pattern: Query -> Retrieve similar vectors -> Build context.
         """
         try:
-            # Get relevant long-term context
-            relevant_context = self.retrieve_relevant_context(user_id, current_query)
+            print(f"🗄️  ChromaDB Retrieval | User: {user_id} | Query: {current_query[:50]}...")
             
-            # Build context prompt
+            # Get relevant context from vector search
+            relevant_context = self.retrieve_relevant_context(user_id, current_query, n_results=5)
+            
+            # Build simple context prompt
             context_parts = []
             
-            # Add recent conversations (short-term memory)
-            if recent_conversations:
-                context_parts.append("## Recent Conversation History:")
-                for conv in recent_conversations[-5:]:  # Last 5 messages
-                    role = conv['role']
-                    message = conv['message']
+            # Add retrieved similar conversations
+            if relevant_context:
+                print(f"   ✓ Found {len(relevant_context)} similar conversations")
+                context_parts.append("## Relevant Past Context:")
+                for ctx in relevant_context:
+                    context_parts.append(f"- {ctx['content']}")
+            else:
+                print(f"   ℹ️ No similar past conversations found")
+            
+            # Add recent short-term memory (last 3 messages for immediate context)
+            if recent_conversations and len(recent_conversations) > 0:
+                print(f"   ✓ Added {min(3, len(recent_conversations))} recent messages")
+                context_parts.append("\n## Recent Conversation:")
+                for conv in recent_conversations[-3:]:
+                    role = conv.get('role', 'unknown')
+                    message = conv.get('message', '')
                     context_parts.append(f"{role}: {message}")
             
-            # Add relevant long-term context
-            if relevant_context:
-                context_parts.append("\\n## Relevant Past Context:")
-                for ctx in relevant_context[:3]:  # Top 3 most relevant
-                    context_parts.append(f"- {ctx['content']}")
+            final_context = "\n".join(context_parts)
+            print(f"   📊 Total context: {len(final_context)} chars\n")
             
-            # Add user patterns if available
-            user_patterns = self.get_user_patterns(user_id)
-            if user_patterns:
-                context_parts.append("\\n## User Patterns:")
-                context_parts.append(user_patterns)
-            
-            return "\\n".join(context_parts)
+            return final_context
             
         except Exception as e:
-            print(f"Error building context prompt: {e}")
+            print(f"   ❌ Error building context: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
     
     def get_user_patterns(self, user_id: int) -> str:

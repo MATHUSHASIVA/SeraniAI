@@ -1,7 +1,7 @@
 import streamlit as st
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict
 from dotenv import load_dotenv
 
@@ -308,6 +308,48 @@ class ChatInterface:
             }
             st.session_state.chat_history.append(assistant_message)
             
+            # Store conversation summary in ChromaDB every 4 messages (2 exchanges)
+            if len(st.session_state.chat_history) % 4 == 0:
+                try:
+                    # Get last 4 messages (2 user + 2 assistant)
+                    recent_messages = st.session_state.chat_history[-4:]
+                    
+                    # Create simple conversation text for summarization
+                    conversation_text = ""
+                    for msg in recent_messages:
+                        role = "User" if msg["role"] == "user" else "Assistant"
+                        conversation_text += f"{role}: {msg['content']}\n"
+                    
+                    # Generate summary using LLM
+                    from openai import OpenAI
+                    client = OpenAI(api_key=st.session_state.openai_api_key)
+                    
+                    summary_response = client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[{
+                            "role": "user",
+                            "content": f"Summarize this conversation in 1-2 sentences focusing on key actions, tasks, and context:\n\n{conversation_text}"
+                        }],
+                        max_tokens=100,
+                        temperature=0.3
+                    )
+                    
+                    summary = summary_response.choices[0].message.content.strip()
+                    
+                    # Store in ChromaDB with simple metadata (only user_id)
+                    st.session_state.context_agent.store_conversation_summary(
+                        user_id=st.session_state.user_id,
+                        summary=summary,
+                        start_time=datetime.now(),
+                        end_time=datetime.now(),
+                        conversation_metadata={}  # Keep empty, only user_id in metadata
+                    )
+                    
+                    print(f"✅ Stored summary: {summary}")
+                
+                except Exception as e:
+                    print(f"⚠️ Failed to store summary: {e}")
+            
         except Exception as e:
             st.error(f"Error processing message: {str(e)}")
             import traceback
@@ -365,52 +407,48 @@ class ChatInterface:
             tasks = st.session_state.db_manager.get_user_tasks(st.session_state.user_id)
             
             # Task statistics
-            col1, col2, col3 = st.columns(3)
+            st.metric("Total Tasks", len(tasks))
             
-            pending_tasks = [t for t in tasks if t['status'] == 'pending']
-            completed_tasks = [t for t in tasks if t['status'] == 'completed']
-            
-            with col1:
-                st.metric("Total Tasks", len(tasks))
-            with col2:
-                st.metric("Pending", len(pending_tasks))
-            with col3:
-                st.metric("Completed", len(completed_tasks))
-            
-            # Pending tasks
-            if pending_tasks:
-                st.subheader("📋 Pending Tasks")
-                for task in pending_tasks:
-                    with st.expander(f"🔹 {task['title']}", expanded=False):
+            # Display tasks
+            if tasks:
+                st.subheader("📋 Your Tasks")
+                for task in tasks:
+                    status_icon = "✅" if task.get('status') == 'completed' else "⏳" if task.get('status') == 'pending' else "❌"
+                    with st.expander(f"{status_icon} {task['title']} - {task.get('status', 'pending').upper()}", expanded=False):
+                        if task['description']:
+                            st.write(f"**Description:** {task['description']}")
+                        
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.write(f"**Description:** {task['description'] or 'No description'}")
-                            st.write(f"**Priority:** {task['priority']}")
+                            st.write(f"**Created:** {task['created_at']}")
+                            if task['due_date'] and task['due_time']:
+                                st.write(f"**Due:** {task['due_date']} at {task['due_time']}")
+                            else:
+                                st.write(f"**Due:** Not set")
+                            st.write(f"**Status:** {task.get('status', 'pending').capitalize()}")
                         with col2:
-                            if task['start_time']:
-                                start_time = datetime.fromisoformat(task['start_time'])
-                                st.write(f"**Start Time:** {start_time.strftime('%B %d, %Y at %I:%M %p')}")
-                            if task['duration_minutes']:
-                                hours = task['duration_minutes'] // 60
-                                mins = task['duration_minutes'] % 60
-                                duration = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
-                                st.write(f"**Duration:** {duration}")
+                            if task['reminder_date'] and task['reminder_time']:
+                                st.write(f"**Reminder:** {task['reminder_date']} at {task['reminder_time']}")
+                            else:
+                                st.write(f"**Reminder:** Not set")
                         
-                        if st.button(f"Mark Complete", key=f"complete_{task['id']}"):
-                            st.session_state.db_manager.update_task_status(task['id'], 'completed')
-                            st.success("Task marked as completed!")
-                            st.rerun()
-            
-            # Completed tasks
-            if completed_tasks:
-                st.subheader("✅ Completed Tasks")
-                for task in completed_tasks[-5:]:  # Show last 5 completed
-                    st.markdown(f"""
-                    <div class="task-card">
-                        <strong>{task['title']}</strong><br>
-                        <small>Completed: {task['updated_at']}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        # Status update buttons
+                        col_btn1, col_btn2, col_btn3 = st.columns(3)
+                        with col_btn1:
+                            if st.button("Mark Complete", key=f"complete_{task['id']}"):
+                                st.session_state.db_manager.update_task(task['id'], status='completed')
+                                st.success("Task marked as completed!")
+                                st.rerun()
+                        with col_btn2:
+                            if st.button("Mark Pending", key=f"pending_{task['id']}"):
+                                st.session_state.db_manager.update_task(task['id'], status='pending')
+                                st.success("Task marked as pending!")
+                                st.rerun()
+                        with col_btn3:
+                            if st.button("Delete", key=f"delete_{task['id']}"):
+                                st.session_state.db_manager.delete_task(task['id'])
+                                st.success("Task deleted!")
+                                st.rerun()
             
             if not tasks:
                 st.info("No tasks yet. Start by chatting with Serani to create your first task!")

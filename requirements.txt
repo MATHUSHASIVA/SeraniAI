@@ -4,6 +4,7 @@ langchain>=0.0.340
 langchain-openai>=0.0.2
 chromadb>=0.4.18
 streamlit==1.28.0
+tiktoken>=0.5.1
 
 # Database and storage
 # sqlite3 is built into Python, no need to install

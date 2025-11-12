@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Tuple
 import dateparser
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+import tiktoken
 
 class TaskAgent:
     """
@@ -21,7 +22,42 @@ class TaskAgent:
             temperature=0.3
         )
         
+        # Token counter for debugging
+        try:
+            self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        except Exception:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        
         # Note: Tools functionality simplified for compatibility
+    
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens in text using tiktoken."""
+        try:
+            return len(self.tokenizer.encode(text))
+        except Exception as e:
+            print(f"Error counting tokens: {e}")
+            return 0
+    
+    def _print_llm_input(self, call_name: str, system_prompt: str, user_message: str):
+        """Print LLM input details for debugging (production mode: minimal output)."""
+        # Production mode: Only show call name and token count
+        system_tokens = self._count_tokens(system_prompt)
+        user_tokens = self._count_tokens(user_message)
+        total_tokens = system_tokens + user_tokens
+        
+        print(f"📋 {call_name} | Tokens: {total_tokens} (system: {system_tokens}, user: {user_tokens})")
+        
+        # Uncomment below for detailed debugging:
+        # print("\n" + "="*80)
+        # print(f"📋 LLM CALL: {call_name}")
+        # print("="*80)
+        # print(f"\n📝 SYSTEM PROMPT ({len(system_prompt)} chars):")
+        # print("-" * 80)
+        # print(system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt)
+        # print(f"\n💬 USER MESSAGE ({len(user_message)} chars):")
+        # print("-" * 80)
+        # print(user_message)
+        # print("="*80 + "\n")
     
     def parse_task_intent(self, user_message: str, user_id: int, context: str = "") -> Dict:
         """
@@ -31,49 +67,44 @@ class TaskAgent:
         You are a task parsing assistant. Analyze the user's message to extract task details.
         
         Context: {context}
-        
-        Classify as a task request if the user:
-        - Explicitly asks: "remind me to...", "schedule...", "set a reminder..."
-        - Mentions events/meetings: "I have a meeting", "meeting tomorrow", "appointment at"
-        - Describes commitments with time: "I need to call", "I have to submit by"
-        
-        Do NOT classify as task requests:
-        - Casual mentions: "I'm flying to Canada" (without wanting to track it)
-        - General updates without scheduling needs
-        
-        Extract the following information if this is a task creation request:
-        1. Task title/description
-        2. Start time (convert relative times like "tomorrow evening" to specific times)
-        3. Duration (in minutes)
-        4. Priority level
-        5. Whether this is a task creation request
-        
         Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        
+        Extract the following information:
+        1. Task title (brief, e.g., "Meeting", "Dentist Appointment", "Cricket Practice")
+        2. Description (details like "work meeting", "online", "with team", "business", etc.)
+        3. Due date (YYYY-MM-DD format)
+        4. Due time (HH:MM format, 24-hour)
+        5. Reminder date (YYYY-MM-DD format)
+        6. Reminder time (HH:MM format, 24-hour)
         
         Return a JSON object with:
         {{
             "is_task_request": boolean,
             "task_title": string or null,
-            "task_description": string or null,
-            "start_time": "YYYY-MM-DD HH:MM:SS" or null,
-            "duration_minutes": integer or null,
-            "priority": "low"|"medium"|"high" or null,
+            "description": string or null,
+            "due_date": "YYYY-MM-DD" or null,
+            "due_time": "HH:MM" or null,
+            "reminder_date": "YYYY-MM-DD" or null,
+            "reminder_time": "HH:MM" or null,
             "confidence": float (0-1)
         }}
         
         Examples:
-        - "remind me to start preparing for my project presentation tomorrow evening" 
-          -> is_task_request: true, start_time: tomorrow at 18:00
-        - "I'm flying to Canada on Thursday morning" 
-          -> is_task_request: false (just sharing information)
-        - "Maybe two hours should be enough" (in context of duration)
-          -> duration_minutes: 120
+        - "meeting tomorrow at 2 PM" 
+          -> task_title: "Meeting", due_date: tomorrow, due_time: "14:00"
+        - "work related, online meeting"
+          -> description: "Work meeting, online"
         """
+        
+        user_content = f"User message: {user_message}"
+        
+        # Print LLM input for debugging
+        self._print_llm_input("Task Intent Parsing", system_prompt, user_content)
         
         try:
             response = self.llm.invoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=f"User message: {user_message}")
+                HumanMessage(content=user_content)
             ])
             
             # Try to parse JSON response
@@ -91,171 +122,134 @@ class TaskAgent:
             return {
                 "is_task_request": False,
                 "task_title": None,
-                "task_description": None,
-                "start_time": None,
-                "duration_minutes": None,
-                "priority": None,
+                "description": None,
+                "due_date": None,
+                "due_time": None,
+                "reminder_date": None,
+                "reminder_time": None,
                 "confidence": 0.0
             }
     
     def create_task_from_intent(self, user_id: int, intent: Dict, 
-                              context: str = "") -> Tuple[bool, str, Optional[int]]:
+                              context: str = "") -> Tuple[bool, str, Optional[int], Optional[List[Dict]]]:
         """
         Create a task based on parsed intent.
-        Returns (success, message, task_id)
+        Returns (success, message, task_id, conflicts)
         """
         try:
+            print(f"DEBUG TaskAgent: Intent received: {intent}")
+            print(f"DEBUG TaskAgent: is_task_request={intent.get('is_task_request')}, confidence={intent.get('confidence')}")
+            
             if not intent.get("is_task_request") or intent.get("confidence", 0) < 0.6:
-                return False, "Not recognized as a task creation request", None
+                print(f"DEBUG TaskAgent: REJECTED - Not task request or low confidence")
+                return False, "Not recognized as a task creation request", None, None
             
             title = intent.get("task_title")
-            description = intent.get("task_description", "")
-            start_time_str = intent.get("start_time")
-            duration_minutes = intent.get("duration_minutes")
-            priority = intent.get("priority", "medium")
+            description = intent.get("description")
+            due_date = intent.get("due_date")
+            due_time = intent.get("due_time")
+            reminder_date = intent.get("reminder_date")
+            reminder_time = intent.get("reminder_time")
+            
+            print(f"DEBUG TaskAgent: Extracted - title={title}, due_date={due_date}, due_time={due_time}")
+            print(f"DEBUG TaskAgent: Reminder - date={reminder_date}, time={reminder_time}")
             
             if not title:
-                return False, "Could not extract task title", None
-            
-            # Parse start time
-            start_time = None
-            if start_time_str:
-                try:
-                    start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    # Try alternative parsing
-                    start_time = dateparser.parse(start_time_str)
-                    if not start_time:
-                        return False, f"Could not parse start time: {start_time_str}", None
+                print(f"DEBUG TaskAgent: REJECTED - No title")
+                return False, "Could not extract task title", None, None
             
             # Check for conflicts if we have timing info
             conflicts = []
-            if start_time and duration_minutes:
-                end_time = start_time + timedelta(minutes=duration_minutes)
+            if due_date and due_time:
                 conflicts = self.db_manager.check_schedule_conflicts(
-                    user_id, start_time, end_time
+                    user_id, due_date, due_time
                 )
+                print(f"DEBUG TaskAgent: Conflicts found: {len(conflicts)}")
             
-            # If conflicts exist, handle them
+            # If conflicts exist, return them for handling
             if conflicts:
                 conflict_msg = self._format_conflicts(conflicts)
-                return False, f"Scheduling conflict detected:\\n{conflict_msg}", None
+                return False, f"conflict", None, conflicts
             
             # Create the task
+            print(f"DEBUG TaskAgent: Creating task in database...")
             task_id = self.db_manager.create_task(
                 user_id=user_id,
                 title=title,
                 description=description,
-                start_time=start_time,
-                duration_minutes=duration_minutes,
-                priority=priority
+                due_date=due_date,
+                due_time=due_time,
+                reminder_date=reminder_date,
+                reminder_time=reminder_time
             )
             
-            # Format success message
-            success_msg = f"Created task: '{title}'"
-            if start_time:
-                success_msg += f" scheduled for {start_time.strftime('%B %d at %I:%M %p')}"
-            if duration_minutes:
-                hours = duration_minutes // 60
-                mins = duration_minutes % 60
-                duration_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
-                success_msg += f" (Duration: {duration_str})"
-            
-            return True, success_msg, task_id
+            print(f"DEBUG TaskAgent: Task created successfully with ID: {task_id}")
+            return True, "Task created successfully", task_id, None
             
         except Exception as e:
             print(f"Error creating task: {e}")
-            return False, f"Error creating task: {str(e)}", None
+            return False, f"Error creating task: {str(e)}", None, None
     
-    def update_task_from_conversation(self, user_id: int, message: str, 
-                                    context: str = "") -> Tuple[bool, str]:
+    def update_task_from_conversation(self, user_id: int, message: str, context: str = "", recent_task_hint: Dict = None) -> Tuple[bool, str, Optional[Dict]]:
         """
-        Update existing tasks based on conversation context.
+        Update existing task based on conversation.
+        Returns (success, message, updated_task)
         """
         try:
-            # Look for update patterns in the message
-            update_intent = self._parse_update_intent(message, user_id, context)
+            # Parse update intent
+            recent_task_info = ""
+            if recent_task_hint:
+                recent_task_info = f"""
+                Recent task just created:
+                - Title: {recent_task_hint.get('title')}
+                - Due: {recent_task_hint.get('due_date')} at {recent_task_hint.get('due_time')}
+                """
             
-            if not update_intent.get("is_update_request"):
-                return False, "No task update detected"
+            system_prompt = f"""
+            Analyze if the user wants to update an existing task.
             
-            task_id = update_intent.get("task_id")
-            updates = update_intent.get("updates", {})
+            Context: {context}
+            {recent_task_info}
+            Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
-            if not task_id or not updates:
-                return False, "Could not identify task or updates to apply"
+            Look for:
+            - Adding/changing reminder: "remind me X minutes before", "set a reminder", "change the reminder to"
+            - Rescheduling: "move to", "shift to", "change to", "reschedule"
+            - Which task to update (by title or description match)
+            - New time/date
+            - Reminder time (parse "30 minutes before" as relative to due time)
             
-            # Apply updates
-            success_messages = []
+            IMPORTANT:
+            - If the user says "the reminder" or "the appointment" without specifying which one, 
+              they are likely referring to the most recently discussed task.
+            - If a recent task is provided above, prefer it as the target unless the user explicitly names a different task.
+            - Look for task identifiers in context like "dentist", "meeting", "appointment", etc.
             
-            if "start_time" in updates:
-                # Handle time changes and conflict checking
-                new_start_time = datetime.strptime(updates["start_time"], '%Y-%m-%d %H:%M:%S')
-                
-                # Get current task for duration info
-                tasks = self.db_manager.get_user_tasks(user_id)
-                current_task = next((t for t in tasks if t['id'] == task_id), None)
-                
-                if current_task and current_task['duration_minutes']:
-                    new_end_time = new_start_time + timedelta(minutes=current_task['duration_minutes'])
-                    conflicts = self.db_manager.check_schedule_conflicts(
-                        user_id, new_start_time, new_end_time, exclude_task_id=task_id
-                    )
-                    
-                    if conflicts:
-                        conflict_msg = self._format_conflicts(conflicts)
-                        return False, f"Cannot update: scheduling conflict\\n{conflict_msg}"
-                
-                # Update start time in database (would need additional DB method)
-                success_messages.append(f"Updated start time to {new_start_time.strftime('%B %d at %I:%M %p')}")
-            
-            if "duration_minutes" in updates:
-                # Update duration (would need additional DB method)
-                duration = updates["duration_minutes"]
-                hours = duration // 60
-                mins = duration % 60
-                duration_str = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
-                success_messages.append(f"Updated duration to {duration_str}")
-            
-            if "status" in updates:
-                self.db_manager.update_task_status(task_id, updates["status"])
-                success_messages.append(f"Updated status to {updates['status']}")
-            
-            return True, "; ".join(success_messages)
-            
-        except Exception as e:
-            print(f"Error updating task: {e}")
-            return False, f"Error updating task: {str(e)}"
-    
-    def _parse_update_intent(self, message: str, user_id: int, context: str) -> Dict:
-        """Parse message for task update intent."""
-        system_prompt = f"""
-        Analyze the message for task update requests in the context of an ongoing conversation.
-        
-        Context: {context}
-        
-        Look for:
-        1. References to existing tasks
-        2. Time changes ("move it to...", "change time to...", "reschedule...")
-        3. Duration changes ("make it longer", "2 hours instead", "extend to...")
-        4. Status changes ("mark complete", "cancel", "done")
-        
-        Return JSON:
-        {{
-            "is_update_request": boolean,
-            "task_id": integer or null,
-            "updates": {{
-                "start_time": "YYYY-MM-DD HH:MM:SS" or null,
-                "duration_minutes": integer or null,
-                "status": string or null
+            Return JSON:
+            {{
+                "is_update_request": boolean,
+                "task_identifier": string or null (title/description to match, or null to use recent task),
+                "new_due_date": "YYYY-MM-DD" or null,
+                "new_due_time": "HH:MM" or null,
+                "new_reminder_date": "YYYY-MM-DD" or null,
+                "new_reminder_time": "HH:MM" or null,
+                "reminder_offset_minutes": number or null (for "X minutes before")
             }}
-        }}
-        """
-        
-        try:
+            
+            Examples:
+            - "shift cricket practice to 3:30 PM" -> task_identifier: "cricket practice", new_due_time: "15:30"
+            - "remind me 30 minutes before appointment" -> task_identifier: "appointment", reminder_offset_minutes: 30
+            - "change the reminder to November 13 at 10 AM" (with recent task context) -> task_identifier: null, new_reminder_date: "2025-11-13", new_reminder_time: "10:00"
+            """
+            
+            user_content = f"User message: {message}"
+            
+            # Print LLM input for debugging
+            self._print_llm_input("Task Update Parsing", system_prompt, user_content)
+            
             response = self.llm.invoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=f"Message: {message}")
+                HumanMessage(content=user_content)
             ])
             
             content = response.content.strip()
@@ -264,61 +258,80 @@ class TaskAgent:
             elif content.startswith('```'):
                 content = content[3:-3]
             
-            return json.loads(content)
+            update_intent = json.loads(content)
+            
+            if not update_intent.get("is_update_request"):
+                return False, "Not an update request", None
+            
+            # Find the task
+            matching_task = None
+            tasks = self.db_manager.get_user_tasks(user_id)
+            task_identifier = update_intent.get("task_identifier", "").lower()
+            
+            # Priority 1: If user explicitly mentioned a task by name, find it
+            if task_identifier:
+                print(f"DEBUG TaskAgent: Looking for task with identifier: '{task_identifier}'")
+                # Search through all tasks for explicit mention
+                for task in tasks:
+                    if (task_identifier in task['title'].lower() or 
+                        (task.get('description') and task_identifier in task.get('description', '').lower())):
+                        matching_task = task
+                        print(f"DEBUG TaskAgent: Found matching task by identifier: {task['title']}")
+                        break
+            
+            # Priority 2: If no explicit match and we have a recent task hint, use it
+            if not matching_task and recent_task_hint:
+                matching_task = recent_task_hint
+                print(f"DEBUG TaskAgent: Using recent task hint: {recent_task_hint['title']}")
+            
+            if not matching_task:
+                return False, "Could not find the task to update", None
+            
+            # Calculate reminder time if offset is provided
+            reminder_date = update_intent.get("new_reminder_date")
+            reminder_time = update_intent.get("new_reminder_time")
+            reminder_offset = update_intent.get("reminder_offset_minutes")
+            
+            if reminder_offset and matching_task.get('due_date') and matching_task.get('due_time'):
+                due_datetime = datetime.strptime(
+                    f"{matching_task['due_date']} {matching_task['due_time']}", 
+                    "%Y-%m-%d %H:%M"
+                )
+                reminder_datetime = due_datetime - timedelta(minutes=reminder_offset)
+                reminder_date = reminder_datetime.strftime("%Y-%m-%d")
+                reminder_time = reminder_datetime.strftime("%H:%M")
+                print(f"DEBUG: Calculated reminder: {reminder_date} {reminder_time} ({reminder_offset} mins before)")
+            
+            # Update the task
+            self.db_manager.update_task(
+                task_id=matching_task['id'],
+                due_date=update_intent.get("new_due_date"),
+                due_time=update_intent.get("new_due_time"),
+                reminder_date=reminder_date,
+                reminder_time=reminder_time
+            )
+            
+            # Fetch updated task
+            updated_task = matching_task.copy()
+            if reminder_date:
+                updated_task['reminder_date'] = reminder_date
+            if reminder_time:
+                updated_task['reminder_time'] = reminder_time
+            
+            return True, f"Updated {matching_task['title']}", updated_task
             
         except Exception as e:
-            print(f"Error parsing update intent: {e}")
-            return {"is_update_request": False}
+            print(f"Error updating task: {e}")
+            return False, f"Error: {str(e)}", None
     
-    def suggest_conflict_resolution(self, user_id: int, conflicts: List[Dict], 
-                                  new_task: Dict) -> List[str]:
-        """
-        Suggest ways to resolve scheduling conflicts.
-        """
-        suggestions = []
-        
+    def delete_task(self, task_id: int) -> Tuple[bool, str]:
+        """Delete a task."""
         try:
-            # Analyze conflicts and suggest alternatives
-            system_prompt = """
-            You are a scheduling assistant. Given scheduling conflicts, suggest practical solutions.
-            
-            Provide 2-3 specific suggestions like:
-            1. Reschedule conflicting task to different time
-            2. Adjust duration of existing or new task
-            3. Suggest alternative time slots
-            
-            Keep suggestions concise and actionable.
-            """
-            
-            conflict_info = "Conflicts:\\n"
-            for conflict in conflicts:
-                conflict_info += f"- '{conflict['title']}' from {conflict['start_time']} to {conflict['end_time']}\\n"
-            
-            new_task_info = f"New task: '{new_task.get('title', 'Untitled')}'"
-            if new_task.get('start_time') and new_task.get('duration_minutes'):
-                end_time = new_task['start_time'] + timedelta(minutes=new_task['duration_minutes'])
-                new_task_info += f" from {new_task['start_time']} to {end_time}"
-            
-            prompt = f"{conflict_info}\\n{new_task_info}"
-            
-            response = self.llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=prompt)
-            ])
-            
-            # Parse suggestions from response
-            content = response.content.strip()
-            suggestions = [line.strip() for line in content.split('\\n') if line.strip() and not line.strip().startswith('Conflicts')]
-            
+            self.db_manager.delete_task(task_id)
+            return True, "Task deleted successfully"
         except Exception as e:
-            print(f"Error generating conflict suggestions: {e}")
-            suggestions = [
-                "Consider rescheduling one of the conflicting tasks",
-                "Adjust the duration to avoid overlap",
-                "Find an alternative time slot"
-            ]
-        
-        return suggestions
+            print(f"Error deleting task: {e}")
+            return False, f"Error deleting task: {str(e)}"
     
     def _format_conflicts(self, conflicts: List[Dict]) -> str:
         """Format conflict information for user display."""
@@ -327,10 +340,8 @@ class TaskAgent:
         
         conflict_strs = []
         for conflict in conflicts:
-            start_time = datetime.fromisoformat(conflict['start_time'])
-            end_time = datetime.fromisoformat(conflict['end_time'])
             conflict_strs.append(
-                f"'{conflict['title']}' ({start_time.strftime('%b %d, %I:%M %p')} - {end_time.strftime('%I:%M %p')})"
+                f"'{conflict['title']}' on {conflict['due_date']} at {conflict['due_time']}"
             )
         
         return "\\n".join(conflict_strs)
@@ -343,54 +354,26 @@ class TaskAgent:
             if not tasks:
                 return "You have no tasks scheduled."
             
-            # Group tasks by status
-            pending_tasks = [t for t in tasks if t['status'] == 'pending']
-            completed_tasks = [t for t in tasks if t['status'] == 'completed']
+            # Count tasks by status
+            pending_tasks = [t for t in tasks if t.get('status') == 'pending']
+            completed_tasks = [t for t in tasks if t.get('status') == 'completed']
             
             summary_parts = []
+            summary_parts.append(f"**Your Tasks ({len(tasks)} total - {len(pending_tasks)} pending, {len(completed_tasks)} completed):**")
             
+            # Show pending tasks first
             if pending_tasks:
-                summary_parts.append(f"**Upcoming Tasks ({len(pending_tasks)}):**")
-                for task in pending_tasks[:5]:  # Show up to 5
+                summary_parts.append("\\n**Pending:**")
+                for task in pending_tasks[:10]:  # Show up to 10
                     task_str = f"• {task['title']}"
-                    if task['start_time']:
-                        start_time = datetime.fromisoformat(task['start_time'])
-                        task_str += f" - {start_time.strftime('%b %d, %I:%M %p')}"
-                    if task['duration_minutes']:
-                        hours = task['duration_minutes'] // 60
-                        mins = task['duration_minutes'] % 60
-                        duration = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
-                        task_str += f" ({duration})"
+                    if task['due_date'] and task['due_time']:
+                        task_str += f" - Due: {task['due_date']} at {task['due_time']}"
+                    if task['reminder_date'] and task['reminder_time']:
+                        task_str += f" (Reminder: {task['reminder_date']} at {task['reminder_time']})"
                     summary_parts.append(task_str)
-            
-            if completed_tasks:
-                summary_parts.append(f"\\n**Completed Tasks: {len(completed_tasks)}**")
             
             return "\\n".join(summary_parts)
             
         except Exception as e:
             print(f"Error getting task summary: {e}")
             return "Unable to retrieve task summary."
-    
-    # Tool functions for LangChain agent
-    def _create_task_tool(self, tool_input: str) -> str:
-        """Tool function for creating tasks."""
-        # This would be called by LangChain agent
-        # Parse tool_input and call create_task_from_intent
-        return "Task creation tool called"
-    
-    def _check_conflicts_tool(self, tool_input: str) -> str:
-        """Tool function for checking conflicts."""
-        return "Conflict checking tool called"
-    
-    def _update_task_tool(self, tool_input: str) -> str:
-        """Tool function for updating tasks."""
-        return "Task update tool called"
-    
-    def _list_tasks_tool(self, tool_input: str) -> str:
-        """Tool function for listing tasks."""
-        return "Task listing tool called"
-    
-    def _resolve_conflict_tool(self, tool_input: str) -> str:
-        """Tool function for resolving conflicts."""
-        return "Conflict resolution tool called"

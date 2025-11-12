@@ -36,13 +36,12 @@ class DatabaseManager:
                     user_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     description TEXT,
-                    start_time TIMESTAMP,
-                    end_time TIMESTAMP,
-                    duration_minutes INTEGER,
-                    status TEXT DEFAULT 'pending',
-                    priority TEXT DEFAULT 'medium',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    due_date TEXT,
+                    due_time TEXT,
+                    reminder_date TEXT,
+                    reminder_time TEXT,
+                    status TEXT DEFAULT 'pending',
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             """)
@@ -80,38 +79,28 @@ class DatabaseManager:
         return self.create_user(username)
     
     def create_task(self, user_id: int, title: str, description: str = None,
-                   start_time: datetime = None, duration_minutes: int = None,
-                   priority: str = 'medium') -> int:
+                   due_date: str = None, due_time: str = None, 
+                   reminder_date: str = None, reminder_time: str = None,
+                   status: str = 'pending') -> int:
         """Create a new task."""
-        end_time = None
-        if start_time and duration_minutes:
-            from datetime import timedelta
-            end_time = start_time + timedelta(minutes=duration_minutes)
-        
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO tasks (user_id, title, description, start_time, end_time, 
-                                 duration_minutes, priority)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, title, description, start_time, end_time, duration_minutes, priority))
+                INSERT INTO tasks (user_id, title, description, due_date, due_time, 
+                                 reminder_date, reminder_time, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, title, description, due_date, due_time, reminder_date, reminder_time, status))
             conn.commit()
             return cursor.lastrowid
     
-    def get_user_tasks(self, user_id: int, status: str = None) -> list:
-        """Get all tasks for a user, optionally filtered by status."""
+    def get_user_tasks(self, user_id: int) -> list:
+        """Get all tasks for a user."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            if status:
-                cursor.execute("""
-                    SELECT * FROM tasks WHERE user_id = ? AND status = ? 
-                    ORDER BY created_at DESC
-                """, (user_id, status))
-            else:
-                cursor.execute("""
-                    SELECT * FROM tasks WHERE user_id = ? 
-                    ORDER BY created_at DESC
-                """, (user_id,))
+            cursor.execute("""
+                SELECT * FROM tasks WHERE user_id = ? 
+                ORDER BY created_at DESC
+            """, (user_id,))
             
             rows = cursor.fetchall()
             tasks = []
@@ -121,41 +110,70 @@ class DatabaseManager:
                     'user_id': row[1],
                     'title': row[2],
                     'description': row[3],
-                    'start_time': row[4],
-                    'end_time': row[5],
-                    'duration_minutes': row[6],
-                    'status': row[7],
-                    'priority': row[8],
-                    'created_at': row[9],
-                    'updated_at': row[10]
+                    'created_at': row[4],
+                    'due_date': row[5],
+                    'due_time': row[6],
+                    'reminder_date': row[7],
+                    'reminder_time': row[8],
+                    'status': row[9] if len(row) > 9 else 'pending'
                 })
             return tasks
     
-    def update_task_status(self, task_id: int, status: str):
-        """Update task status."""
+    def update_task(self, task_id: int, title: str = None, description: str = None,
+                   due_date: str = None, due_time: str = None,
+                   reminder_date: str = None, reminder_time: str = None,
+                   status: str = None):
+        """Update a task."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP 
-                WHERE id = ?
-            """, (status, task_id))
+            updates = []
+            params = []
+            
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if due_date is not None:
+                updates.append("due_date = ?")
+                params.append(due_date)
+            if due_time is not None:
+                updates.append("due_time = ?")
+                params.append(due_time)
+            if reminder_date is not None:
+                updates.append("reminder_date = ?")
+                params.append(reminder_date)
+            if reminder_time is not None:
+                updates.append("reminder_time = ?")
+                params.append(reminder_time)
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            
+            if updates:
+                params.append(task_id)
+                query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?"
+                cursor.execute(query, params)
+                conn.commit()
+    
+    def delete_task(self, task_id: int):
+        """Delete a task."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
     
-    def check_schedule_conflicts(self, user_id: int, start_time: datetime, 
-                               end_time: datetime, exclude_task_id: int = None) -> list:
+    def check_schedule_conflicts(self, user_id: int, due_date: str, 
+                               due_time: str, exclude_task_id: int = None) -> list:
         """Check for scheduling conflicts with existing tasks."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             query = """
-                SELECT * FROM tasks WHERE user_id = ? AND status = 'pending'
-                AND start_time IS NOT NULL AND end_time IS NOT NULL
-                AND (
-                    (start_time <= ? AND end_time > ?) OR
-                    (start_time < ? AND end_time >= ?) OR
-                    (start_time >= ? AND end_time <= ?)
-                )
+                SELECT * FROM tasks WHERE user_id = ? 
+                AND due_date = ? AND due_time = ?
             """
-            params = [user_id, start_time, start_time, end_time, end_time, start_time, end_time]
+            params = [user_id, due_date, due_time]
             
             if exclude_task_id:
                 query += " AND id != ?"
@@ -169,8 +187,41 @@ class DatabaseManager:
                 conflicts.append({
                     'id': row[0],
                     'title': row[2],
-                    'start_time': row[4],
-                    'end_time': row[5]
+                    'due_date': row[5],
+                    'due_time': row[6]
                 })
             return conflicts
+    
+    def get_tasks_by_status(self, user_id: int, status: str) -> list:
+        """Get tasks filtered by status."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM tasks WHERE user_id = ? AND status = ?
+                ORDER BY created_at DESC
+            """, (user_id, status))
+            
+            rows = cursor.fetchall()
+            tasks = []
+            for row in rows:
+                tasks.append({
+                    'id': row[0],
+                    'user_id': row[1],
+                    'title': row[2],
+                    'description': row[3],
+                    'created_at': row[4],
+                    'due_date': row[5],
+                    'due_time': row[6],
+                    'reminder_date': row[7],
+                    'reminder_time': row[8],
+                    'status': row[9] if len(row) > 9 else 'pending'
+                })
+            return tasks
+    
+    def update_task_status(self, task_id: int, status: str):
+        """Update only the status of a task."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+            conn.commit()
     
