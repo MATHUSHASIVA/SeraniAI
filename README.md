@@ -1,8 +1,10 @@
 # Contextual Personal Assistant - Serani
 
+![Serani Assistant Interface](screenshot.png)
+
+
 A sophisticated multi-agent chatbot system built with OpenAI, ChromaDB, LangChain, and Streamlit for task management and contextual conversations.
 
-![Serani Assistant Interface](screenshot.png)
 
 ## Features
 
