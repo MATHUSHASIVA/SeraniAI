@@ -17,6 +17,3 @@ protobuf<5,>=3.20
 
 # Environment management
 python-dotenv>=1.0.0
-
-# Date and time parsing
-dateparser>=1.1.8

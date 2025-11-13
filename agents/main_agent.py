@@ -2,20 +2,23 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import json
 import re
+import traceback
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-import tiktoken
 
+from .base_agent import BaseAgent
 from .context_agent import ContextAgent
 from .task_agent import TaskAgent
 
-class MainAgent:
+class MainAgent(BaseAgent):
     """
     Main conversational agent that routes messages to specialized agents
     and maintains conversation flow.
     """
     
     def __init__(self, openai_api_key: str, db_manager, context_agent: ContextAgent, task_agent: TaskAgent):
+        super().__init__()  # Initialize BaseAgent
+        
         self.openai_api_key = openai_api_key
         self.db_manager = db_manager
         self.context_agent = context_agent
@@ -59,12 +62,6 @@ class MainAgent:
             "pending_task": None,
             "last_intent": None
         }
-        
-        # Token counter for debugging
-        try:
-            self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
-        except Exception:
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
     
     def process_message(self, user_id: int, message: str, username: str = "User") -> str:
         """
@@ -111,35 +108,6 @@ class MainAgent:
             import traceback
             traceback.print_exc()
             return f"I'm sorry, I encountered an error processing your message: {str(e)}"
-    
-    def _count_tokens(self, text: str) -> int:
-        """Count tokens in text using tiktoken."""
-        try:
-            return len(self.tokenizer.encode(text))
-        except Exception as e:
-            print(f"Error counting tokens: {e}")
-            return 0
-    
-    def _print_llm_input(self, call_name: str, system_prompt: str, user_message: str):
-        """Print LLM input details for debugging (production mode: minimal output)."""
-        # Production mode: Only show call name and token count
-        system_tokens = self._count_tokens(system_prompt)
-        user_tokens = self._count_tokens(user_message)
-        total_tokens = system_tokens + user_tokens
-        
-        print(f"🤖 {call_name} | Tokens: {total_tokens} (system: {system_tokens}, user: {user_tokens})")
-        
-        # Uncomment below for detailed debugging:
-        # print("\n" + "="*80)
-        # print(f"🤖 LLM CALL: {call_name}")
-        # print("="*80)
-        # print(f"\n📝 SYSTEM PROMPT ({len(system_prompt)} chars):")
-        # print("-" * 80)
-        # print(system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt)
-        # print(f"\n💬 USER MESSAGE ({len(user_message)} chars):")
-        # print("-" * 80)
-        # print(user_message)
-        # print("="*80 + "\n")
     
     def _analyze_intent(self, message: str, context: str, username: str) -> Dict:
         """
@@ -306,6 +274,7 @@ class MainAgent:
             if missing_info:
                 self.conversation_state["awaiting_clarification"] = True
                 self.conversation_state["pending_task"] = task_intent
+                self.conversation_state["original_message"] = message  # Store original message for context
                 
                 # Determine what to ask for
                 if "due date and time" in missing_info:
@@ -398,7 +367,8 @@ class MainAgent:
                     self.conversation_state["awaiting_clarification"] = True
                     self.conversation_state["clarification_type"] = "conflict_resolution"
                     self.conversation_state["conflicting_task"] = conflict_task
-                    self.conversation_state["initial_message_causing_clarification"] = message
+                    self.conversation_state["original_message"] = message  # Store original message for context
+                    self.conversation_state["initial_message_causing_clarification"] = message  # Keep for compatibility
                     return f"By the way, {username} — looks like you've got {conflict_task['title']} scheduled at {conflict_task['due_time']}. Want me to handle that overlap?"
                 else:
                     return f"Hmm, had trouble with that. {message_result} 🤔"
@@ -418,8 +388,12 @@ class MainAgent:
             pending_task = self.conversation_state.get("pending_task", {})
             clarification_type = self.conversation_state.get("clarification_type")
             
-            # Parse the clarification response
-            timing_intent = self.task_agent.parse_task_intent(message, user_id, context)
+            # Combine original message with clarification for better context
+            original_message = self.conversation_state.get("original_message", "")
+            combined_message = f"{original_message}. {message}" if original_message else message
+            
+            # Parse the clarification response with full context
+            timing_intent = self.task_agent.parse_task_intent(combined_message, user_id, context)
             
             if clarification_type == "description":
                 # User provided task type/description
@@ -508,31 +482,106 @@ class MainAgent:
             elif clarification_type == "conflict_resolution":
                 # User is responding to conflict
                 conflicting_task = self.conversation_state.get("conflicting_task")
-                
-                # Check if user wants to reschedule
-                if any(word in message.lower() for word in ["move", "shift", "reschedule", "change"]):
-                    # Extract new time from message
-                    success, update_msg, updated_task = self.task_agent.update_task_from_conversation(
-                        user_id, message, context
-                    )
-                    
-                    if success:
-                        # Clear state and create original task
-                        self.conversation_state["awaiting_clarification"] = False
-                        self.conversation_state["clarification_type"] = None
-                        conflicting_task_title = conflicting_task.get("title")
-                        
-                        # Create the original pending task
-                        success2, msg2, task_id2, _ = self.task_agent.create_task_from_intent(
+
+                msg_lower = message.lower()
+                # Prefer rescheduling the OLD (conflicting) task if user uses reschedule keywords
+                # or explicitly mentions the conflicting task title/name.
+                conflict_title = (conflicting_task.get('title') or '').lower() if conflicting_task else ''
+
+                wants_to_reschedule_old = any(word in msg_lower for word in ["move", "shift", "reschedule", "change"]) or (conflict_title and conflict_title in msg_lower)
+
+                if wants_to_reschedule_old:
+                    # Parse the new time for the OLD conflicting task
+                    new_timing = self.task_agent.parse_task_intent(message, user_id, context)
+
+                    if new_timing.get("due_date") or new_timing.get("due_time"):
+                        # Update the conflicting task with new time
+                        old_task_id = conflicting_task.get("id") if conflicting_task else None
+                        update_params = {}
+
+                        if new_timing.get("due_date"):
+                            update_params["due_date"] = new_timing["due_date"]
+                        if new_timing.get("due_time"):
+                            update_params["due_time"] = new_timing["due_time"]
+
+                        if old_task_id:
+                            # Update the old task in database
+                            self.db_manager.update_task(old_task_id, **update_params)
+
+                            # Now create the NEW pending task at its ORIGINAL time
+                            pending_task["is_task_request"] = True
+                            pending_task["confidence"] = 1.0
+
+                            success2, msg2, task_id2, _ = self.task_agent.create_task_from_intent(
+                                user_id, pending_task, context
+                            )
+
+                            # Clear state
+                            self.conversation_state["awaiting_clarification"] = False
+                            self.conversation_state["clarification_type"] = None
+                            self.conversation_state["original_message"] = None
+                            self.conversation_state["pending_task"] = None
+                            self.conversation_state["conflicting_task"] = None
+
+                            if success2:
+                                old_task_title = conflicting_task.get("title")
+                                new_task_title = pending_task.get("task_title")
+
+                                # Format times nicely
+                                new_time_obj = datetime.strptime(update_params.get("due_time", conflicting_task.get("due_time")), "%H:%M")
+                                new_time_12h = new_time_obj.strftime("%I:%M %p").lstrip("0")
+
+                                orig_time_obj = datetime.strptime(pending_task["due_time"], "%H:%M")
+                                orig_time_12h = orig_time_obj.strftime("%I:%M %p").lstrip("0")
+
+                                return f"Perfect! ✅ I've rescheduled {old_task_title} to {new_time_12h} and added {new_task_title} at {orig_time_12h}."
+                            else:
+                                return f"I rescheduled {conflicting_task.get('title')}, but had trouble creating the new task. {msg2}"
+                        else:
+                            return "I couldn't identify which existing task to reschedule. Could you name it?"
+                    else:
+                        return "I didn't catch the new time. Could you specify when to reschedule? (e.g., 7 AM)"
+
+                # If user intends to schedule the NEW task at a different time, handle that next
+                new_task_keywords = ["schedule", "then", "at", "evening", "morning", "afternoon"]
+                if any(word in msg_lower for word in new_task_keywords):
+                    # Parse new time for the PENDING task from the message
+                    new_timing = self.task_agent.parse_task_intent(message, user_id, context)
+
+                    if new_timing.get("due_date") and new_timing.get("due_time"):
+                        # Update the pending task with new time
+                        pending_task["due_date"] = new_timing["due_date"]
+                        pending_task["due_time"] = new_timing["due_time"]
+
+                        # Now try to create the task with new time
+                        pending_task["is_task_request"] = True
+                        pending_task["confidence"] = 1.0
+
+                        success, result_message, task_id, new_conflicts = self.task_agent.create_task_from_intent(
                             user_id, pending_task, context
                         )
-                        
+
+                        # Clear state
+                        self.conversation_state["awaiting_clarification"] = False
+                        self.conversation_state["clarification_type"] = None
+                        self.conversation_state["original_message"] = None
                         self.conversation_state["pending_task"] = None
                         self.conversation_state["conflicting_task"] = None
-                        
-                        return f"All done ✅ I've updated your schedule and adjusted the reminder for {conflicting_task_title}."
+
+                        if success:
+                            task_title = pending_task.get("task_title")
+                            # Format the date and time nicely
+                            date_obj = datetime.strptime(pending_task["due_date"], "%Y-%m-%d")
+                            day_name = date_obj.strftime("%A")
+                            time_12h = datetime.strptime(pending_task["due_time"], "%H:%M").strftime("%I:%M %p").lstrip("0")
+                            return f"Perfect! ✅ {task_title} scheduled for {day_name} at {time_12h}."
+                        else:
+                            return f"Hmm, had trouble with that. {result_message} 🤔"
                     else:
-                        return f"Hmm, had trouble updating that. {update_msg} 🤔"
+                        return "I didn't catch the new time. Could you specify when? (e.g., 6 PM)"
+
+                # Default: ask for clarification
+                return "Would you like to reschedule one of the tasks? Just let me know the new time."
             
             # Try to create the complete task
             print(f"DEBUG: Creating task with pending_task: {pending_task}")
@@ -549,6 +598,7 @@ class MainAgent:
             self.conversation_state["awaiting_clarification"] = False
             self.conversation_state["clarification_type"] = None
             self.conversation_state["pending_task"] = None
+            self.conversation_state["original_message"] = None
             self.conversation_state["initial_message_causing_clarification"] = None
             
             if success:
