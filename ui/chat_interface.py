@@ -202,11 +202,10 @@ class ChatInterface:
                     st.session_state.task_agent
                 )
                 
-                # Load conversation history
-                status_text.text("Loading conversation history...")
+                # Initialize empty chat history
+                status_text.text("Initializing chat history...")
                 progress.progress(90)
-                history = st.session_state.main_agent.get_conversation_history(st.session_state.user_id)
-                st.session_state.chat_history = history
+                st.session_state.chat_history = []
                 
                 status_text.text("Finalizing setup...")
                 progress.progress(100)

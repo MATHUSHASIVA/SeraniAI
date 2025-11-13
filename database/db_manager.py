@@ -191,37 +191,3 @@ class DatabaseManager:
                     'due_time': row[6]
                 })
             return conflicts
-    
-    def get_tasks_by_status(self, user_id: int, status: str) -> list:
-        """Get tasks filtered by status."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM tasks WHERE user_id = ? AND status = ?
-                ORDER BY created_at DESC
-            """, (user_id, status))
-            
-            rows = cursor.fetchall()
-            tasks = []
-            for row in rows:
-                tasks.append({
-                    'id': row[0],
-                    'user_id': row[1],
-                    'title': row[2],
-                    'description': row[3],
-                    'created_at': row[4],
-                    'due_date': row[5],
-                    'due_time': row[6],
-                    'reminder_date': row[7],
-                    'reminder_time': row[8],
-                    'status': row[9] if len(row) > 9 else 'pending'
-                })
-            return tasks
-    
-    def update_task_status(self, task_id: int, status: str):
-        """Update only the status of a task."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
-            conn.commit()
-    

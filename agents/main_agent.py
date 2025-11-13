@@ -809,13 +809,8 @@ class MainAgent(BaseAgent):
             print(f"Error handling general conversation: {e}")
             return f"Thanks for sharing, {username}! How can I help you stay organized today?"
     
-    def get_conversation_history(self, user_id: int, limit: int = 10) -> List[Dict]:
-        """Get conversation history - now managed by Streamlit session state."""
-        # Chat history is managed by Streamlit session state
-        # This method returns empty for compatibility
-        return []
-    
     def reset_conversation_state(self):
+
         """Reset conversation state for new session."""
         self.conversation_state = {
             "awaiting_clarification": False,
