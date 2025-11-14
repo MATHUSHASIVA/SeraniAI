@@ -8,11 +8,12 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add parent directory to path to import our modules
+# Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import DatabaseManager
 from agents import ContextAgent, TaskAgent, MainAgent
+
 
 class ChatInterface:
     """Streamlit-based chat interface for the Contextual Personal Assistant."""
@@ -153,7 +154,7 @@ class ChatInterface:
     
     def initialize_assistant(self, api_key: str, username: str):
         """Initialize the assistant with all components."""
-        # Prevent re-initialization if already initialized or in progress
+        # Prevent re-initialization
         if st.session_state.get('initialized', False):
             st.info("✅ Assistant is already initialized!")
             return
@@ -163,28 +164,24 @@ class ChatInterface:
             return
             
         try:
-            # Set flag to prevent multiple initialization attempts
             st.session_state.initializing = True
             
             with st.spinner("Initializing assistant..."):
-                # Update session state
                 st.session_state.openai_api_key = api_key
                 st.session_state.username = username
                 
-                # Initialize database
                 progress = st.progress(0)
                 status_text = st.empty()
                 
+                # Initialize components
                 status_text.text("Initializing database...")
                 progress.progress(20)
                 st.session_state.db_manager = DatabaseManager()
                 
-                # Get or create user
                 status_text.text("Setting up user profile...")
                 progress.progress(40)
                 st.session_state.user_id = st.session_state.db_manager.get_or_create_user(username)
                 
-                # Initialize agents
                 status_text.text("Loading context agent...")
                 progress.progress(60)
                 st.session_state.context_agent = ContextAgent(api_key)
@@ -202,7 +199,6 @@ class ChatInterface:
                     st.session_state.task_agent
                 )
                 
-                # Initialize empty chat history
                 status_text.text("Initializing chat history...")
                 progress.progress(90)
                 st.session_state.chat_history = []
@@ -214,7 +210,7 @@ class ChatInterface:
                 progress.empty()
                 status_text.empty()
                 
-                # Mark as successfully initialized - DO THIS BEFORE RERUN
+                # Mark as successfully initialized
                 st.session_state.initialized = True
                 st.session_state.initializing = False
                 
@@ -224,7 +220,6 @@ class ChatInterface:
                 import time
                 time.sleep(0.5)
                 
-                # Rerun to refresh the UI
                 st.rerun()
                 
         except Exception as e:
@@ -235,7 +230,6 @@ class ChatInterface:
             st.error(f"❌ Failed to initialize assistant: {str(e)}")
             st.error("Please check your API key and try again.")
             
-            # Display detailed error information in expander
             with st.expander("🔍 Error Details"):
                 st.exception(e)
     
@@ -277,7 +271,7 @@ class ChatInterface:
             return
         
         try:
-            # Add user message to history immediately for better UX
+            # Add user message to history
             user_message = {
                 "role": "user",
                 "content": user_input,
@@ -287,17 +281,11 @@ class ChatInterface:
             
             # Get response from main agent
             with st.spinner("Serani is thinking..."):
-                try:
-                    response = st.session_state.main_agent.process_message(
-                        st.session_state.user_id, 
-                        user_input, 
-                        st.session_state.username
-                    )
-                except Exception as process_error:
-                    st.error(f"Error in process_message: {str(process_error)}")
-                    import traceback
-                    st.code(traceback.format_exc())
-                    response = "I'm sorry, I encountered an error. Please try again."
+                response = st.session_state.main_agent.process_message(
+                    st.session_state.user_id, 
+                    user_input, 
+                    st.session_state.username
+                )
             
             # Add assistant response to history
             assistant_message = {
@@ -307,52 +295,10 @@ class ChatInterface:
             }
             st.session_state.chat_history.append(assistant_message)
             
-            # Store conversation summary in ChromaDB every 4 messages (2 exchanges)
-            if len(st.session_state.chat_history) % 4 == 0:
-                try:
-                    # Get last 4 messages (2 user + 2 assistant)
-                    recent_messages = st.session_state.chat_history[-4:]
-                    
-                    # Create simple conversation text for summarization
-                    conversation_text = ""
-                    for msg in recent_messages:
-                        role = "User" if msg["role"] == "user" else "Assistant"
-                        conversation_text += f"{role}: {msg['content']}\n"
-                    
-                    # Generate summary using LLM
-                    from openai import OpenAI
-                    client = OpenAI(api_key=st.session_state.openai_api_key)
-                    
-                    summary_response = client.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=[{
-                            "role": "user",
-                            "content": f"Summarize this conversation in 1-2 sentences focusing on key actions, tasks, and context:\n\n{conversation_text}"
-                        }],
-                        max_tokens=100,
-                        temperature=0.3
-                    )
-                    
-                    summary = summary_response.choices[0].message.content.strip()
-                    
-                    # Store in ChromaDB with simple metadata (only user_id)
-                    st.session_state.context_agent.store_conversation_summary(
-                        user_id=st.session_state.user_id,
-                        summary=summary,
-                        start_time=datetime.now(),
-                        end_time=datetime.now(),
-                        conversation_metadata={}  # Keep empty, only user_id in metadata
-                    )
-                    
-                    print(f"✅ Stored summary: {summary}")
-                
-                except Exception as e:
-                    print(f"⚠️ Failed to store summary: {e}")
-            
         except Exception as e:
             st.error(f"Error processing message: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
+            with st.expander("🔍 Error Details"):
+                st.exception(e)
     
     def render_main_interface(self):
         """Render the main chat interface."""
