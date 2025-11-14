@@ -19,21 +19,22 @@ A sophisticated multi-agent chatbot system built with OpenAI, ChromaDB, LangChai
 
 ```
 contextual-assistant/
-├── agents/                 # Multi-agent system
-│   ├── __init__.py        # Agent module exports
-│   ├── main_agent.py      # Central conversational router
-│   ├── task_agent.py      # Task creation and management
-│   └── context_agent.py   # Memory and context handling (ChromaDB)
-├── database/              # Data persistence
-│   ├── __init__.py        # Database module exports
-│   ├── db_manager.py      # SQLite database management
-│   └── chroma_db/         # ChromaDB vector storage
-├── ui/                    # User interface
-│   ├── __init__.py        # UI module exports
-│   └── chat_interface.py  # Streamlit chat application
-└── utils/                 # Utilities
-    ├── __init__.py        # Utils module exports
-    └── text_utils.py      # Text processing helpers
+├── agents/                      # Multi-agent system
+│   ├── __init__.py              # Agent module exports
+│   ├── main_agent.py            # Main orchestration layer 
+│   ├── task_agent.py            # Task parsing & DB operations
+│   ├── context_agent.py         # Context retrieval from ChromaDB
+│   ├── task_handlers.py         # Task operation business logic 
+│   ├── prompts.py               # Prompt templates & utilities 
+│   ├── response_formatter.py    # Response formatting utilities
+│   └── clarification_handler.py # Clarification logic for ambiguous inputs
+├── database/                    # Data persistence
+│   ├── __init__.py              # Database module exports
+│   ├── db_manager.py            # SQLite database management
+│   └── chroma_db/               # ChromaDB vector storage
+└── ui/                          # User interface
+    ├── __init__.py              # UI module exports
+    └── chat_interface.py        # Streamlit chat application
 ```
 
 
